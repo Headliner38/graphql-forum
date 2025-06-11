@@ -2,6 +2,7 @@ package graph
 
 import (
 	"fmt"
+	"sync"
 
 	//"github.com/headliner38/graphql-forum/graph/generated"
 	"github.com/graph-gophers/dataloader/v7"
@@ -23,7 +24,10 @@ type Resolver struct {
 	Comments             []*model.Comment
 	Loaders              map[string]*dataloader.Loader[string, []*model.Comment]
 	Cache                *lru.Cache[string, *model.Comment]
-	DepthAndLengthConfig DepthAndLengthConfig //MaxDepth int
+	DepthAndLengthConfig DepthAndLengthConfig
+	subscriptions        map[string]map[string]chan *model.Comment
+	mu                   sync.Mutex // потокобезопасность по ТЗ
+
 }
 
 func (r *Resolver) LoadRepliesForComment(comment *model.Comment) []*model.Comment { // резолвер для подгрузки ответов на комментарий
@@ -47,6 +51,7 @@ func NewResolver(cfg DepthAndLengthConfig) (*Resolver, error) { // создан�
 		Comments:             []*model.Comment{},
 		DepthAndLengthConfig: cfg,
 		Cache:                cache,
+		subscriptions:        make(map[string]map[string]chan *model.Comment),
 	}
 
 	resolver.Loaders = NewLoaders(resolver)

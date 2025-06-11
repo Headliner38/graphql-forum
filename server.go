@@ -11,6 +11,7 @@ import (
 	"github.com/99designs/gqlgen/graphql/handler/lru"
 	"github.com/99designs/gqlgen/graphql/handler/transport"
 	"github.com/99designs/gqlgen/graphql/playground"
+	"github.com/gorilla/websocket"
 	"github.com/headliner38/graphql-forum/graph"
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -18,7 +19,6 @@ import (
 const defaultPort = "8080"
 
 func main() {
-	//resolver := graph.NewResolver()
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -27,7 +27,7 @@ func main() {
 	}
 
 	cfg := graph.DepthAndLengthConfig{
-		MaxCommentDepth:  10, // Можно вынести в переменные окружения
+		MaxCommentDepth:  10, // подумать над реализацей через переменные окружения
 		MaxCommentLength: 2000,
 	}
 
@@ -36,17 +36,17 @@ func main() {
 		log.Fatalf("Failed to create resolver: %v", err)
 	}
 
-	/*resolver, err := graph.NewResolver() //begin
-	if err != nil {
-		log.Fatalf("Failed to create resolver: %v", err)
-	}*/
-
 	srv := handler.New(graph.NewExecutableSchema(graph.Config{
 		Resolvers: resolver,
-	})) //end
+	}))
 
-	//srv := handler.New(graph.NewExecutableSchema(graph.Config{Resolvers: &graph.Resolver{}}))
-
+	srv.AddTransport(transport.Websocket{
+		Upgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				return true // разрешение на все соединения для тестов
+			},
+		},
+	})
 	srv.AddTransport(transport.Options{})
 	srv.AddTransport(transport.GET{})
 	srv.AddTransport(transport.POST{})

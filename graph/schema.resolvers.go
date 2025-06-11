@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/headliner38/graphql-forum/graph/model"
 )
 
@@ -79,7 +80,18 @@ func (r *mutationResolver) CreateComment(ctx context.Context, text string, postI
 		ParentCommID: parentCommID,
 	}
 	r.Comments = append(r.Comments, newComment)
-	r.DebugCheckReplies() //new
+	r.DebugCheckReplies() //удалить потом
+
+	//реализация логики подписок
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if subscribers, ok := r.subscriptions[postID]; ok { // отправляем new коммент всем подписчикам поста с postID
+		for _, ch := range subscribers {
+			ch <- newComment
+		}
+	}
+
 	return newComment, nil
 }
 
@@ -191,8 +203,31 @@ func (r *Resolver) GetCommentTree(ctx context.Context, postID string, commentID 
 
 // NewComment is the resolver for the newComment field.
 func (r *subscriptionResolver) NewComment(ctx context.Context, postID string) (<-chan *model.Comment, error) {
-	//need
-	panic(fmt.Errorf("not implemented: NewComment - newComment"))
+	ch := make(chan *model.Comment, 1) // буферизированный канал на одного подписчика
+
+	subscriptionID := uuid.New().String() // уникальный id для подписки на "уведомления))"
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// мапа для postID если еще не создана
+	if _, ok := r.subscriptions[postID]; !ok {
+		r.subscriptions[postID] = make(map[string]chan *model.Comment)
+	}
+
+	r.subscriptions[postID][subscriptionID] = ch // подписываемся
+
+	go func() { // когда отключается клиент, удаляется подписка
+		<-ctx.Done()
+		r.mu.Lock()
+		delete(r.subscriptions[postID], subscriptionID)
+		if len(r.subscriptions[postID]) == 0 {
+			delete(r.subscriptions, postID)
+		}
+		r.mu.Unlock()
+	}()
+
+	return ch, nil
 }
 
 // Comment returns CommentResolver implementation.
