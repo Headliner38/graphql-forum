@@ -12,12 +12,27 @@ import (
 )
 
 // Replies is the resolver for the replies field.
-func (r *commentResolver) Replies(ctx context.Context, obj *model.Comment) ([]*model.Comment, error) { //need
-	return r.LoadRepliesForComment(obj), nil
+func (r *commentResolver) Replies(ctx context.Context, obj *model.Comment, limit *int32, offset *int32) ([]*model.Comment, error) {
+	//need
+	loader, ok := r.Resolver.Loaders["CommentReplies"]
+	if !ok {
+		return nil, fmt.Errorf("loader not found")
+	}
+
+	thunk := loader.Load(ctx, obj.ID)
+	result, err := thunk()
+	if err != nil {
+		return nil, err
+	}
+
+	// Применяем пагинацию к результату
+	l, o := getPaginationParams(limit, offset)
+	return applyPagination(result, o, l), nil
 }
 
 // CreatePost is the resolver for the createPost field.
-func (r *mutationResolver) CreatePost(ctx context.Context, title string, content string, comments bool) (*model.Post, error) { //need
+func (r *mutationResolver) CreatePost(ctx context.Context, title string, content string, comments bool) (*model.Post, error) {
+	//need
 	newPost := &model.Post{
 		ID:       fmt.Sprintf("%d", len(r.Posts)+1),
 		Title:    title,
@@ -29,8 +44,9 @@ func (r *mutationResolver) CreatePost(ctx context.Context, title string, content
 }
 
 // CreateComment is the resolver for the createComment field.
-func (r *mutationResolver) CreateComment(ctx context.Context, text string, postID string, parentCommID *string) (*model.Comment, error) { //need
-	if len(text) > 2000 { // ограничение по длине комментария
+func (r *mutationResolver) CreateComment(ctx context.Context, text string, postID string, parentCommID *string) (*model.Comment, error) {
+	//need
+	if len(text) > r.Resolver.DepthAndLengthConfig.MaxCommentLength { // ограничение по длине комментария
 		return nil, fmt.Errorf("вы пытаетесь оставить комментарий длиной больше 2000 символов")
 	}
 	post, err := r.findPostByID(postID) // поиск по id для поста к которому хотим оставить комментарий
@@ -68,38 +84,114 @@ func (r *mutationResolver) CreateComment(ctx context.Context, text string, postI
 }
 
 // Posts is the resolver for the posts field.
-func (r *queryResolver) Posts(ctx context.Context) ([]*model.Post, error) { //need
+func (r *queryResolver) Posts(ctx context.Context) ([]*model.Post, error) {
+	//need
 	return r.Resolver.Posts, nil
 }
 
 // Comments is the resolver for the comments field.
-func (r *queryResolver) Comments(ctx context.Context, postID string, limit int32, offset int32) ([]*model.Comment, error) { //need
-	var result []*model.Comment
+func (r *queryResolver) Comments(ctx context.Context, postID string, limit int32, offset int32) ([]*model.Comment, error) {
+	//need
+	var rootComments []*model.Comment
 
 	for _, comment := range r.Resolver.Comments { // только основные комментарии
 		if comment.PostID == postID && comment.ParentCommID == nil {
-			result = append(result, comment)
+			rootComments = append(rootComments, comment)
 		}
 	}
-	// Реализация пагинации
-	if int(offset) >= len(result) {
+	// Реализация пагинации для корневых комментариев
+	if int(offset) >= len(rootComments) {
 		return []*model.Comment{}, nil // пустой для соответсвия типу
 	}
 	all := int(offset) + int(limit)
-	if all > len(result) {
-		all = len(result)
+	if all > len(rootComments) {
+		all = len(rootComments)
 	}
-	return result[offset:all], nil
+	pgnRootComms := rootComments[offset:all] // paginatedRootComments
+
+	//Подгрузка для корневых комментариев иерархии ответов
+	var result []*model.Comment
+	for _, root := range pgnRootComms {
+		fullComment, err := r.loadCommentWithReplies(root, r.Resolver.DepthAndLengthConfig.MaxCommentDepth) // поменять функцию
+		if err != nil {
+			return nil, fmt.Errorf("ошибка при загрузке комментария с ответами")
+		}
+		result = append(result, fullComment)
+	}
+
+	return result, nil
 }
 
 // DebugComments is the resolver for the debugComments field.
-func (r *queryResolver) DebugComments(ctx context.Context) ([]*model.Comment, error) { //tmp
+func (r *queryResolver) DebugComments(ctx context.Context) ([]*model.Comment, error) {
+	//tmp
 	// временно, не забыть удалить.
 	return r.Resolver.Comments, nil
 }
 
+func (r *Resolver) loadCommentWithReplies(comment *model.Comment, maxDepth int) (*model.Comment, error) { // резолвер для загрузки комментариев со ВСЕМИ ответами (рекурс)
+	if maxDepth <= 0 {
+		return comment, nil
+	}
+
+	loader := r.Loaders["CommentReplies"]
+	thunk := loader.Load(context.Background(), comment.ID) // TODO: поправить контекст
+	replies, err := thunk()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, reply := range replies {
+		_, err := r.loadCommentWithReplies(reply, maxDepth-1)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	comment.Replies = replies
+	return comment, nil
+
+}
+
+// CommentTree is the resolver for the commentTree field.
+func (r *queryResolver) CommentTree(ctx context.Context, postID string, commentID string) (*model.Comment, error) {
+	var result *model.Comment
+	for _, c := range r.Resolver.Comments {
+		if c.ID == commentID && c.PostID == postID {
+			result = c
+			break
+		}
+	}
+	if result == nil {
+		return nil, fmt.Errorf("комментарий с id: %s не найден, невозможно загрузить дерево комментариев", commentID)
+	}
+	loadResult, err := r.loadCommentWithReplies(result, r.Resolver.DepthAndLengthConfig.MaxCommentDepth) // тут может быть ошибка, держать во внимании
+	if err != nil {
+		return nil, fmt.Errorf("ошибка при загрузке комментариев с ответами")
+	}
+	return loadResult, nil
+}
+
+func (r *Resolver) GetCommentTree(ctx context.Context, postID string, commentID string, maxDepth int) (*model.Comment, error) { // ленивая загрузка и кеширование
+	// Проверяем кэш
+	if cached, ok := r.Cache.Get(commentID); ok {
+		return cached, nil
+	}
+
+	// Загружаем из хранилища
+	comment, err := r.loadCommentWithReplies(r.findCommentByID(commentID), maxDepth)
+	if err != nil {
+		return nil, err
+	}
+
+	// Сохраняем в кэш
+	r.Cache.Add(commentID, comment)
+	return comment, nil
+}
+
 // NewComment is the resolver for the newComment field.
-func (r *subscriptionResolver) NewComment(ctx context.Context, postID string) (<-chan *model.Comment, error) { //need
+func (r *subscriptionResolver) NewComment(ctx context.Context, postID string) (<-chan *model.Comment, error) {
+	//need
 	panic(fmt.Errorf("not implemented: NewComment - newComment"))
 }
 

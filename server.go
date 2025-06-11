@@ -26,7 +26,26 @@ func main() {
 		fmt.Println("Используется порт по умолчанию(8080), чтобы использовать другой порт задайте переменную окружения PORT")
 	}
 
-	srv := handler.New(graph.NewExecutableSchema(graph.Config{Resolvers: &graph.Resolver{}}))
+	cfg := graph.DepthAndLengthConfig{
+		MaxCommentDepth:  10, // Можно вынести в переменные окружения
+		MaxCommentLength: 2000,
+	}
+
+	resolver, err := graph.NewResolver(cfg)
+	if err != nil {
+		log.Fatalf("Failed to create resolver: %v", err)
+	}
+
+	/*resolver, err := graph.NewResolver() //begin
+	if err != nil {
+		log.Fatalf("Failed to create resolver: %v", err)
+	}*/
+
+	srv := handler.New(graph.NewExecutableSchema(graph.Config{
+		Resolvers: resolver,
+	})) //end
+
+	//srv := handler.New(graph.NewExecutableSchema(graph.Config{Resolvers: &graph.Resolver{}}))
 
 	srv.AddTransport(transport.Options{})
 	srv.AddTransport(transport.GET{})

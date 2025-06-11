@@ -9,6 +9,7 @@ type Query {
   posts: [Post!]!
   comments(postID: ID!, limit: Int!, offset: Int!): [Comment!]!
   debugComments: [Comment!]! @deprecated(reason: "Только для отладки in-memory хранилища")
+  commentTree(postID: ID!, commentID: ID!): Comment!
 }
 
 type Comment { 
@@ -16,7 +17,7 @@ type Comment {
   text: String!
   postID: ID!
   parentCommID: ID
-  replies: [Comment!]! @goField(forceResolver: true)
+  replies(limit: Int, offset: Int): [Comment!]! @goField(forceResolver: true)
 }
 
 type Mutation { #методы
