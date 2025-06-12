@@ -14,6 +14,7 @@ require (
 require (
 	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
+	github.com/lib/pq v1.10.9 // indirect
 	github.com/sosodev/duration v1.3.1 // indirect
 	golang.org/x/net v0.41.0 // indirect
 )

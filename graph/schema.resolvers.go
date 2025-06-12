@@ -35,22 +35,26 @@ func (r *commentResolver) Replies(ctx context.Context, obj *model.Comment, limit
 func (r *mutationResolver) CreatePost(ctx context.Context, title string, content string, comments bool) (*model.Post, error) {
 	//need
 	newPost := &model.Post{
-		ID:       fmt.Sprintf("%d", len(r.Posts)+1),
+		ID:       uuid.New().String(),
 		Title:    title,
 		Content:  content,
 		Comments: comments,
 	}
-	r.Posts = append(r.Posts, newPost)
+	if err := r.Storage.CreatePost(ctx, newPost); err != nil {
+		return nil, fmt.Errorf("failed to create post: %w", err)
+	}
 	return newPost, nil
+	/*r.Posts = append(r.Posts, newPost)
+	return newPost, nil*/
 }
 
 // CreateComment is the resolver for the createComment field.
 func (r *mutationResolver) CreateComment(ctx context.Context, text string, postID string, parentCommID *string) (*model.Comment, error) {
 	//need
 	if len(text) > r.Resolver.DepthAndLengthConfig.MaxCommentLength { // ограничение по длине комментария
-		return nil, fmt.Errorf("вы пытаетесь оставить комментарий длиной больше 2000 символов")
+		return nil, fmt.Errorf("вы пытаетесь оставить комментарий длиной больше %d символов", r.Resolver.DepthAndLengthConfig.MaxCommentLength)
 	}
-	post, err := r.findPostByID(postID) // поиск по id для поста к которому хотим оставить комментарий
+	/*post, err := r.findPostByID(postID) // поиск по id для поста к которому хотим оставить комментарий
 	if err != nil {
 		return nil, err
 	}
@@ -71,16 +75,18 @@ func (r *mutationResolver) CreateComment(ctx context.Context, text string, postI
 		if !parentCommExists {
 			return nil, fmt.Errorf("основного комментария с id: %v не существует", *parentCommID)
 		}
-	}
-
+	}*/
 	newComment := &model.Comment{
-		ID:           fmt.Sprintf("%d", len(r.Comments)+1),
+		ID:           uuid.New().String(),
 		Text:         text,
 		PostID:       postID,
 		ParentCommID: parentCommID,
 	}
-	r.Comments = append(r.Comments, newComment)
-	r.DebugCheckReplies() //удалить потом
+	if err := r.Storage.CreateComment(ctx, newComment); err != nil {
+		return nil, fmt.Errorf("failed to create comment: %w", err)
+	}
+	/*r.Comments = append(r.Comments, newComment)
+	r.DebugCheckReplies() //удалить потом*/
 
 	//реализация логики подписок
 	r.mu.Lock()
@@ -88,23 +94,45 @@ func (r *mutationResolver) CreateComment(ctx context.Context, text string, postI
 
 	if subscribers, ok := r.subscriptions[postID]; ok { // отправляем new коммент всем подписчикам поста с postID
 		for _, ch := range subscribers {
-			ch <- newComment
+			select {
+			case ch <- newComment: // может быть ошибка держать во внимании
+			default:
+				// не блокируем, если канал полный
+			}
 		}
 	}
-
 	return newComment, nil
 }
 
 // Posts is the resolver for the posts field.
 func (r *queryResolver) Posts(ctx context.Context) ([]*model.Post, error) {
-	//need
-	return r.Resolver.Posts, nil
+	posts, err := r.Storage.GetPosts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get posts: %w", err)
+	}
+	return posts, nil
 }
 
 // Comments is the resolver for the comments field.
 func (r *queryResolver) Comments(ctx context.Context, postID string, limit int32, offset int32) ([]*model.Comment, error) {
-	//need
-	var rootComments []*model.Comment
+	//сначала только корневые комментарии с пагинацией
+	rootComments, err := r.Storage.GetCommentsByPostID(ctx, postID, int(limit), int(offset))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get comments: %w", err)
+	}
+
+	// Загружаем иерархию ответов для каждого корневого комментария
+	var result []*model.Comment
+	for _, root := range rootComments {
+		fullComment, err := r.loadCommentWithReplies(root, r.Resolver.DepthAndLengthConfig.MaxCommentDepth)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load comment tree: %w", err)
+		}
+		result = append(result, fullComment)
+	}
+
+	return result, nil
+	/*var rootComments []*model.Comment
 
 	for _, comment := range r.Resolver.Comments { // только основные комментарии
 		if comment.PostID == postID && comment.ParentCommID == nil {
@@ -131,31 +159,28 @@ func (r *queryResolver) Comments(ctx context.Context, postID string, limit int32
 		result = append(result, fullComment)
 	}
 
-	return result, nil
+	return result, nil*/
 }
 
 // DebugComments is the resolver for the debugComments field.
 func (r *queryResolver) DebugComments(ctx context.Context) ([]*model.Comment, error) {
 	//tmp
 	// временно, не забыть удалить.
-	return r.Resolver.Comments, nil
+	return nil, fmt.Errorf("debug endpoint disabled")
 }
 
-func (r *Resolver) loadCommentWithReplies(comment *model.Comment, maxDepth int) (*model.Comment, error) { // резолвер для загрузки комментариев со ВСЕМИ ответами (рекурс)
+/*func (r *Resolver) loadCommentWithReplies(comment *model.Comment, maxDepth int) (*model.Comment, error) { // резолвер для загрузки комментариев со ВСЕМИ ответами (рекурс)
 	if maxDepth <= 0 {
 		return comment, nil
 	}
 
-	loader := r.Loaders["CommentReplies"]
-	thunk := loader.Load(context.Background(), comment.ID) // TODO: поправить контекст
-	replies, err := thunk()
+	replies, err := r.Storage.GetReplies(context.Background(), comment.ID)
 	if err != nil {
 		return nil, err
 	}
 
 	for _, reply := range replies {
-		_, err := r.loadCommentWithReplies(reply, maxDepth-1)
-		if err != nil {
+		if _, err := r.loadCommentWithReplies(reply, maxDepth-1); err != nil {
 			return nil, err
 		}
 	}
@@ -163,11 +188,26 @@ func (r *Resolver) loadCommentWithReplies(comment *model.Comment, maxDepth int) 
 	comment.Replies = replies
 	return comment, nil
 
-}
+}*/
 
 // CommentTree is the resolver for the commentTree field.
 func (r *queryResolver) CommentTree(ctx context.Context, postID string, commentID string) (*model.Comment, error) {
-	var result *model.Comment
+	comment, err := r.Storage.GetCommentByID(ctx, commentID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get comment: %w", err)
+	}
+
+	if comment.PostID != postID {
+		return nil, fmt.Errorf("comment does not belong to specified post")
+	}
+
+	fullComment, err := r.loadCommentWithReplies(comment, r.Resolver.DepthAndLengthConfig.MaxCommentDepth)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load comment tree: %w", err)
+	}
+
+	return fullComment, nil
+	/*var result *model.Comment
 	for _, c := range r.Resolver.Comments {
 		if c.ID == commentID && c.PostID == postID {
 			result = c
@@ -181,29 +221,40 @@ func (r *queryResolver) CommentTree(ctx context.Context, postID string, commentI
 	if err != nil {
 		return nil, fmt.Errorf("ошибка при загрузке комментариев с ответами")
 	}
-	return loadResult, nil
-}
-
-func (r *Resolver) GetCommentTree(ctx context.Context, postID string, commentID string, maxDepth int) (*model.Comment, error) { // ленивая загрузка и кеширование
-	// Проверяем кэш
-	if cached, ok := r.Cache.Get(commentID); ok {
-		return cached, nil
-	}
-
-	// Загружаем из хранилища
-	comment, err := r.loadCommentWithReplies(r.findCommentByID(commentID), maxDepth)
-	if err != nil {
-		return nil, err
-	}
-
-	// Сохраняем в кэш
-	r.Cache.Add(commentID, comment)
-	return comment, nil
+	return loadResult, nil*/
 }
 
 // NewComment is the resolver for the newComment field.
 func (r *subscriptionResolver) NewComment(ctx context.Context, postID string) (<-chan *model.Comment, error) {
-	ch := make(chan *model.Comment, 1) // буферизированный канал на одного подписчика
+	// Проверяем существование поста
+	if _, err := r.Storage.GetPostByID(ctx, postID); err != nil {
+		return nil, fmt.Errorf("post not found: %w", err)
+	}
+
+	ch := make(chan *model.Comment, 1)
+	subscriptionID := uuid.New().String()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.subscriptions[postID]; !ok {
+		r.subscriptions[postID] = make(map[string]chan *model.Comment)
+	}
+
+	r.subscriptions[postID][subscriptionID] = ch
+
+	go func() {
+		<-ctx.Done()
+		r.mu.Lock()
+		delete(r.subscriptions[postID], subscriptionID)
+		if len(r.subscriptions[postID]) == 0 {
+			delete(r.subscriptions, postID)
+		}
+		r.mu.Unlock()
+	}()
+
+	return ch, nil
+	/*ch := make(chan *model.Comment, 1) // буферизированный канал на одного подписчика
 
 	subscriptionID := uuid.New().String() // уникальный id для подписки на "уведомления))"
 
@@ -227,7 +278,7 @@ func (r *subscriptionResolver) NewComment(ctx context.Context, postID string) (<
 		r.mu.Unlock()
 	}()
 
-	return ch, nil
+	return ch, nil*/
 }
 
 // Comment returns CommentResolver implementation.

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"github.com/headliner38/graphql-forum/graph/storage"
 	"log"
 	"net/http"
 	"os"
@@ -26,12 +28,30 @@ func main() {
 		fmt.Println("Используется порт по умолчанию(8080), чтобы использовать другой порт задайте переменную окружения PORT")
 	}
 
+	storageType := flag.String("storage", "memory", "Тип хранилища: memory или postgres")
+	pgConnStr := flag.String("pg-conn", "postgres://user:3276@localhost:5433/postgres?sslmode=disable", "PostgreSQL connection string")
+	flag.Parse()
+
+	var repo storage.Repository
+
+	switch *storageType {
+	case "postgres":
+		pgRepo, err := storage.NewPostgresRepository(*pgConnStr)
+		if err != nil {
+			log.Fatalf("Failed to init PostgreSQL: %v", err)
+		}
+		repo = pgRepo
+	default:
+		repo = storage.NewMemoryRepository()
+		log.Println("Using in-memory storage")
+	}
+
 	cfg := graph.DepthAndLengthConfig{
 		MaxCommentDepth:  10, // подумать над реализацей через переменные окружения
 		MaxCommentLength: 2000,
 	}
 
-	resolver, err := graph.NewResolver(cfg)
+	resolver, err := graph.NewResolver(cfg, repo)
 	if err != nil {
 		log.Fatalf("Failed to create resolver: %v", err)
 	}

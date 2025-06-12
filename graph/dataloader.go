@@ -14,33 +14,40 @@ type CommentLoader struct {
 
 func (l *CommentLoader) LoadReplies(ctx context.Context, keys []string) []*dataloader.Result[[]*model.Comment] {
 	// сначала проверка на инициализацию, потом начинается уже реализация после следующего комментария
-	if l.r == nil {
+	if l.r == nil || l.r.Storage == nil {
 		results := make([]*dataloader.Result[[]*model.Comment], len(keys))
 		for i := range results {
 			results[i] = &dataloader.Result[[]*model.Comment]{
-				Error: fmt.Errorf("резолвер не инициализирован"),
+				Error: fmt.Errorf("резолвер или хранилище не инициализированы"),
 			}
 		}
 		return results
 	}
 
-	var results []*dataloader.Result[[]*model.Comment]
+	results := make([]*dataloader.Result[[]*model.Comment], len(keys))
 
-	// Предзагрузка всех нужных комментариев за один проход
-	repliesMap := make(map[string][]*model.Comment)
-	for _, comment := range l.r.Comments {
-		if comment.ParentCommID != nil {
-			repliesMap[*comment.ParentCommID] = append(repliesMap[*comment.ParentCommID], comment)
+	for i, key := range keys {
+		replies, err := l.r.Storage.GetReplies(ctx, key)
+		if err != nil {
+			results[i] = &dataloader.Result[[]*model.Comment]{
+				Error: fmt.Errorf("ошибка загрузки ответов: %w", err),
+			}
+			continue
+		}
+
+		copiedReplies := make([]*model.Comment, len(replies)) // копируем, чтобы не изменились извне
+		for j, reply := range replies {
+			copiedReplies[j] = &model.Comment{
+				ID:           reply.ID,
+				Text:         reply.Text,
+				PostID:       reply.PostID,
+				ParentCommID: reply.ParentCommID,
+			}
+		}
+		results[i] = &dataloader.Result[[]*model.Comment]{
+			Data: copiedReplies,
 		}
 	}
-
-	// Формируем результаты в порядке запрошенных ключей
-	for _, key := range keys {
-		results = append(results, &dataloader.Result[[]*model.Comment]{
-			Data: repliesMap[key],
-		})
-	}
-
 	return results
 }
 
