@@ -3,10 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/headliner38/graphql-forum/graph/storage"
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/headliner38/graphql-forum/graph/storage"
 
 	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/99designs/gqlgen/graphql/handler/extension"

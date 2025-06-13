@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:14
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 3276
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./migrations/001_init_prod_schema.up.sql:/docker-entrypoint-initdb.d/001_init_prod_schema.up.sql
+
+  app:
+    build: .
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: 3276
+      DB_NAME: postgres
+      DB_SSLMODE: disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db 
